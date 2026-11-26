@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
-import koreanize_matplotlib  # 한글 폰트 자동 설정
 
 # 페이지 기본 설정
 st.set_page_config(page_title="산업용 로봇 도입과 산업재해 회귀분석", layout="wide")
