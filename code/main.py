@@ -2,172 +2,251 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from scipy import stats
 import plotly.graph_objects as go
 from pathlib import Path
+from scipy import stats
+import re
 
-# 페이지 기본 설정
+# ==========================================
+# 1. 페이지 설정
+# ==========================================
+
 st.set_page_config(
-    page_title="산업용 로봇 도입과 산업재해 회귀분석",
+    page_title="산업용 로봇과 산업재해 분석",
+    page_icon="🤖",
     layout="wide"
 )
 
-st.title("🤖 산업용 로봇 도입이 산업재해를 줄일 수 있을까?")
-st.markdown(
-    "2004년~2025년 데이터를 바탕으로 "
-    "**일반기계산업 내수 규모(X)**와 **산업재해자 수(Y)**의 관계를 분석합니다."
-)
+st.title("🤖 산업용 로봇 도입은 산업재해를 줄일 수 있을까?")
 
-# --------------------------------------------------
-# 1. 엑셀 파일 경로 자동 찾기
-# --------------------------------------------------
+st.markdown("""
+2004년~2025년의 공공데이터를 활용하여
+**일반기계산업 내수 규모와 산업재해자 수의 관계**를 분석합니다.
+""")
+
+st.divider()
+
+
+# ==========================================
+# 2. 엑셀 파일 경로 설정
+# ==========================================
 
 BASE_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = BASE_DIR.parent
 
-def find_file(filename):
-    candidates = [
-        BASE_DIR / filename,
-        PROJECT_DIR / filename,
-        BASE_DIR / "data" / filename,
-        PROJECT_DIR / "data" / filename
-    ]
+ROBOT_FILE = BASE_DIR / "1_로봇_연도별_내수_2004_2025.xlsx"
 
-    for path in candidates:
-        if path.exists():
-            return path
+ACCIDENT_FILE = BASE_DIR / "2_산업재해_연도별_총합_2004_2025.xlsx"
 
-    # 프로젝트 폴더 내부에서 파일명 검색
-    matches = list(PROJECT_DIR.rglob(filename))
 
-    if matches:
-        return matches[0]
+# ==========================================
+# 3. 데이터 전처리 함수
+# ==========================================
 
-    raise FileNotFoundError(
-        f"{filename} 파일을 찾을 수 없습니다. "
-        "GitHub에 엑셀 파일이 업로드되어 있는지 확인하세요."
+def find_year_columns(df):
+    """2004년, 2005년 등의 연도 열을 찾는 함수"""
+
+    result = {}
+
+    for col in df.columns:
+        match = re.search(r"(20\d{2})", str(col))
+
+        if match:
+            year = int(match.group(1))
+
+            if 2004 <= year <= 2025:
+                result[year] = col
+
+    return result
+
+
+def find_year_col(df):
+    """연도 또는 년도 열 찾기"""
+
+    for col in df.columns:
+        name = str(col).strip().lower()
+
+        if name in ["연도", "년도", "year"]:
+            return col
+
+    return None
+
+
+def find_value_col(df, keyword, preferred=None):
+    """내수 또는 재해자 수 열 찾기"""
+
+    if preferred and preferred in df.columns:
+        return preferred
+
+    for col in df.columns:
+        if keyword in str(col):
+            return col
+
+    raise ValueError(
+        f"엑셀 파일에서 '{keyword}' 관련 열을 찾을 수 없습니다. "
+        f"현재 열 이름: {list(df.columns)}"
     )
 
 
-# --------------------------------------------------
-# 2. 데이터 불러오기 및 전처리
-# --------------------------------------------------
+def make_year_data(df, keyword, preferred=None):
+    """연도별 데이터로 변환"""
+
+    year_col = find_year_col(df)
+    year_columns = find_year_columns(df)
+
+    # 가로형 데이터: 2004년, 2005년 등이 열에 있는 경우
+    if year_columns:
+        result = []
+
+        for year, col in year_columns.items():
+            values = pd.to_numeric(df[col], errors="coerce")
+            result.append({
+                "연도": year,
+                "값": values.sum(min_count=1)
+            })
+
+        return pd.DataFrame(result)
+
+    # 세로형 데이터: 연도와 값이 각각 열에 있는 경우
+    if year_col is not None:
+        value_col = find_value_col(df, keyword, preferred)
+
+        temp = pd.DataFrame({
+            "연도": pd.to_numeric(df[year_col], errors="coerce"),
+            "값": pd.to_numeric(df[value_col], errors="coerce")
+        })
+
+        temp = temp.dropna()
+
+        temp["연도"] = temp["연도"].astype(int)
+
+        return temp.groupby("연도", as_index=False)["값"].sum()
+
+    # 연도 열이 없고 값만 있는 경우
+    value_col = find_value_col(df, keyword, preferred)
+
+    temp = pd.to_numeric(df[value_col], errors="coerce").dropna()
+
+    years = list(range(2004, 2004 + len(temp)))
+
+    if len(temp) > 22:
+        raise ValueError("연도 열이 없는 데이터의 행 개수가 22개를 초과합니다.")
+
+    return pd.DataFrame({
+        "연도": years,
+        "값": temp.values
+    })
+
+
+# ==========================================
+# 4. 데이터 불러오기
+# ==========================================
 
 @st.cache_data
 def load_data():
 
-    robot_path = find_file(
-        "1_로봇_연도별_내수_2004_2025.xlsx"
+    if not ROBOT_FILE.exists():
+        raise FileNotFoundError(
+            f"로봇 엑셀 파일을 찾을 수 없습니다: {ROBOT_FILE}"
+        )
+
+    if not ACCIDENT_FILE.exists():
+        raise FileNotFoundError(
+            f"산업재해 엑셀 파일을 찾을 수 없습니다: {ACCIDENT_FILE}"
+        )
+
+    robot_raw = pd.read_excel(ROBOT_FILE)
+    accident_raw = pd.read_excel(ACCIDENT_FILE)
+
+    # 로봇 내수 데이터
+    robot = make_year_data(
+        robot_raw,
+        keyword="내수",
+        preferred="내수(십억원)"
     )
 
-    accident_path = find_file(
-        "2_산업중분류별_재해자수_전처리_2004_2025.xlsx"
+    robot = robot.rename(
+        columns={"값": "로봇_내수"}
     )
 
-    df_robot = pd.read_excel(robot_path)
-    df_acc = pd.read_excel(accident_path)
+    # 산업재해자 수 데이터
+    accident = make_year_data(
+        accident_raw,
+        keyword="재해자",
+        preferred="재해자수"
+    )
 
-    # 산업재해 합계 행 제외
-    df_acc = df_acc[
-        df_acc["대업종"] != "합계"
+    accident = accident.rename(
+        columns={"값": "산업재해자수"}
+    )
+
+    # 연도를 기준으로 두 데이터 결합
+    data = pd.merge(
+        robot,
+        accident,
+        on="연도",
+        how="inner"
+    )
+
+    data = data.sort_values("연도")
+
+    data = data.replace([np.inf, -np.inf], np.nan)
+    data = data.dropna(
+        subset=["로봇_내수", "산업재해자수"]
+    )
+
+    data = data[
+        (data["연도"] >= 2004) &
+        (data["연도"] <= 2025)
     ].copy()
 
-    years = list(range(2004, 2026))
-
-    # 로봇 데이터 확인
-    if "내수(십억원)" not in df_robot.columns:
-        raise ValueError("로봇 엑셀에 '내수(십억원)' 열이 없습니다.")
-
-    if len(df_robot) != len(years):
-        raise ValueError(
-            f"로봇 데이터 행 개수가 맞지 않습니다. "
-            f"예상: {len(years)}개, 실제: {len(df_robot)}개"
-        )
-
-    # 연도별 산업재해자 수 계산
-    total_acc = []
-    mfg_acc = []
-    mach_acc = []
-
-    for year in years:
-
-        col = f"{year}년 재해자수"
-
-        if col not in df_acc.columns:
-            raise ValueError(
-                f"산업재해 엑셀에 '{col}' 열이 없습니다."
-            )
-
-        total_acc.append(
-            pd.to_numeric(df_acc[col], errors="coerce").sum()
-        )
-
-        mfg_acc.append(
-            pd.to_numeric(
-                df_acc.loc[df_acc["대업종"] == "제조업", col],
-                errors="coerce"
-            ).sum()
-        )
-
-        mach_acc.append(
-            pd.to_numeric(
-                df_acc.loc[
-                    df_acc["구분"] ==
-                    "기계기구·금속·비금속광물제품제조업",
-                    col
-                ],
-                errors="coerce"
-            ).sum()
-        )
-
-    # 통합 데이터 생성
-    merged = pd.DataFrame({
-        "연도": years,
-        "일반기계_내수(십억원)": pd.to_numeric(
-            df_robot["내수(십억원)"],
-            errors="coerce"
-        ).values,
-        "전체_산업_재해자수(명)": total_acc,
-        "제조업_전체_재해자수(명)": mfg_acc,
-        "기계·금속제조업_재해자수(명)": mach_acc
-    })
-
-    # 결측값 제거
-    merged_clean = merged.dropna().copy()
-
-    return merged, merged_clean
+    return data
 
 
-# 데이터 로딩 오류 처리
+# ==========================================
+# 5. 데이터 실행 및 오류 확인
+# ==========================================
+
 try:
-    df_all, df = load_data()
+    df = load_data()
 
 except Exception as e:
-    st.error("데이터를 불러오는 중 오류가 발생했습니다.")
+    st.error("데이터를 불러오는 중 문제가 발생했습니다.")
     st.exception(e)
+
+    st.info("""
+    확인할 사항
+
+    1. 두 엑셀 파일이 모두 code 폴더 안에 있는지 확인하세요.
+    2. 파일 이름이 코드와 정확히 같은지 확인하세요.
+    3. 엑셀의 열 이름이 실제 데이터와 일치하는지 확인하세요.
+    """)
+
     st.stop()
 
 
-# --------------------------------------------------
-# 3. 사이드바 분석 옵션
-# --------------------------------------------------
+if len(df) < 3:
+    st.error("회귀분석을 진행하기 위한 데이터가 부족합니다.")
+    st.stop()
 
-st.sidebar.header("⚙️ 분석 옵션 설정")
 
-target_col = st.sidebar.selectbox(
-    "비교할 산업재해자 수 선택:",
-    [
-        "기계·금속제조업_재해자수(명)",
-        "제조업_전체_재해자수(명)",
-        "전체_산업_재해자수(명)"
-    ]
-)
+# ==========================================
+# 6. 분석 기간 선택
+# ==========================================
+
+st.sidebar.header("⚙️ 분석 설정")
+
+min_year = int(df["연도"].min())
+max_year = int(df["연도"].max())
+
+if min_year == max_year:
+    st.error("분석 가능한 연도가 2개 이상 필요합니다.")
+    st.stop()
 
 year_range = st.sidebar.slider(
-    "분석 연도 범위 선택:",
-    2004,
-    2024,
-    (2004, 2024)
+    "분석 연도 선택",
+    min_value=min_year,
+    max_value=max_year,
+    value=(min_year, max_year)
 )
 
 df_filtered = df[
@@ -175,116 +254,77 @@ df_filtered = df[
     (df["연도"] <= year_range[1])
 ].copy()
 
-
-# --------------------------------------------------
-# 4. 회귀분석 계산
-# --------------------------------------------------
-
-st.subheader("📊 분석 데이터")
-
-st.write(
-    f"분석 기간: {year_range[0]}년 ~ {year_range[1]}년"
-)
-
-st.write(f"분석 데이터 개수: {len(df_filtered)}개 연도")
-
-st.dataframe(
-    df_filtered,
-    use_container_width=True
-)
-
 if len(df_filtered) < 3:
-    st.warning("회귀분석을 하려면 최소 3개 연도의 데이터가 필요합니다.")
+    st.warning("회귀분석을 위해 최소 3개 연도를 선택해 주세요.")
     st.stop()
 
-x = df_filtered["일반기계_내수(십억원)"].values
-y = df_filtered[target_col].values
 
-if len(np.unique(x)) < 2:
-    st.error("투자금 데이터의 값이 모두 같아 회귀분석을 할 수 없습니다.")
-    st.stop()
+# ==========================================
+# 7. 데이터 요약
+# ==========================================
 
-slope, intercept, r_val, p_val, std_err = stats.linregress(x, y)
+st.subheader("📋 분석 데이터 요약")
 
-r_squared = r_val ** 2
-y_pred = slope * x + intercept
-
-
-# --------------------------------------------------
-# 5. 핵심 통계 지표
-# --------------------------------------------------
-
-st.subheader("📌 회귀분석 핵심 결과")
-
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 
 col1.metric(
-    "회귀 기울기",
-    f"{slope:.4f}"
+    "분석 기간",
+    f"{year_range[0]}~{year_range[1]}년"
 )
 
 col2.metric(
-    "상관계수 (R)",
-    f"{r_val:.4f}"
+    "분석 연도 수",
+    f"{len(df_filtered)}년"
 )
 
 col3.metric(
-    "결정계수 (R²)",
-    f"{r_squared:.4f}"
+    "데이터 기준",
+    "공공데이터"
 )
 
-col4.metric(
-    "유의확률 (p-value)",
-    f"{p_val:.4f}"
-)
+with st.expander("통합 데이터 표 확인하기"):
+    st.dataframe(
+        df_filtered,
+        use_container_width=True
+    )
 
 
-# --------------------------------------------------
-# 6. 회귀분석 산점도
-# --------------------------------------------------
+# ==========================================
+# 8. 그래프 1 - 연도별 산업재해자 수
+# ==========================================
 
 st.divider()
 
-st.subheader("📈 로봇 내수와 산업재해자 수의 회귀분석")
+st.header("1️⃣ 연도별 산업재해자 수")
+
+st.markdown("""
+연도에 따라 산업재해자 수가 어떻게 변화했는지 확인합니다.
+""")
 
 fig1 = go.Figure()
 
 fig1.add_trace(
     go.Scatter(
-        x=x,
-        y=y,
-        mode="markers+text",
-        text=df_filtered["연도"].astype(str) + "년",
-        textposition="top center",
-        name="실제 데이터",
-        marker=dict(
-            size=11,
-            color="#1F77B4"
-        )
-    )
-)
-
-sort_idx = np.argsort(x)
-
-fig1.add_trace(
-    go.Scatter(
-        x=x[sort_idx],
-        y=y_pred[sort_idx],
-        mode="lines",
-        name="회귀 직선",
+        x=df_filtered["연도"],
+        y=df_filtered["산업재해자수"],
+        mode="lines+markers",
+        name="산업재해자 수",
         line=dict(
-            color="#E74C3C",
+            color="#E67E22",
             width=3
-        )
+        ),
+        marker=dict(size=9),
+        hovertemplate=
+        "%{x}년<br>산업재해자 수: %{y:,.0f}명<extra></extra>"
     )
 )
 
 fig1.update_layout(
-    title=f"일반기계 내수와 {target_col}의 관계",
-    xaxis_title="일반기계산업 내수 (십억원)",
+    title="연도별 산업재해자 수 변화",
+    xaxis_title="연도",
     yaxis_title="산업재해자 수 (명)",
     template="plotly_white",
-    hovermode="closest"
+    hovermode="x unified"
 )
 
 st.plotly_chart(
@@ -293,46 +333,40 @@ st.plotly_chart(
 )
 
 
-# --------------------------------------------------
-# 7. 연도별 추이 비교
-# --------------------------------------------------
+# ==========================================
+# 9. 그래프 2 - 연도별 로봇 내수
+# ==========================================
 
-st.subheader("📊 연도별 내수 및 산업재해 변화")
+st.divider()
+
+st.header("2️⃣ 연도별 로봇 내수")
+
+st.markdown("""
+일반기계산업의 내수 규모가 연도에 따라 어떻게 변화했는지 확인합니다.
+""")
 
 fig2 = go.Figure()
 
 fig2.add_trace(
     go.Scatter(
         x=df_filtered["연도"],
-        y=df_filtered["일반기계_내수(십억원)"],
+        y=df_filtered["로봇_내수"],
+        mode="lines+markers",
         name="일반기계 내수",
-        mode="lines+markers",
-        line=dict(color="#1F77B4", width=3)
-    )
-)
-
-fig2.add_trace(
-    go.Scatter(
-        x=df_filtered["연도"],
-        y=df_filtered[target_col],
-        name=target_col,
-        mode="lines+markers",
-        yaxis="y2",
-        line=dict(color="#E67E22", width=3)
+        line=dict(
+            color="#2874A6",
+            width=3
+        ),
+        marker=dict(size=9),
+        hovertemplate=
+        "%{x}년<br>내수: %{y:,.2f}십억원<extra></extra>"
     )
 )
 
 fig2.update_layout(
-    title="연도별 일반기계 내수와 산업재해자 수 변화",
+    title="연도별 일반기계산업 내수 변화",
     xaxis_title="연도",
-    yaxis=dict(
-        title="일반기계 내수 (십억원)"
-    ),
-    yaxis2=dict(
-        title="산업재해자 수 (명)",
-        overlaying="y",
-        side="right"
-    ),
+    yaxis_title="내수 (십억원)",
     template="plotly_white",
     hovermode="x unified"
 )
@@ -343,78 +377,164 @@ st.plotly_chart(
 )
 
 
-# --------------------------------------------------
-# 8. 분석 결과 해석
-# --------------------------------------------------
+# ==========================================
+# 10. 그래프 3 - 회귀분석
+# ==========================================
 
 st.divider()
 
-st.subheader("📝 데이터 분석 및 해석")
+st.header("3️⃣ 로봇 내수에 따른 산업재해자 수")
+
+st.markdown("""
+로봇 내수를 독립변수(X), 산업재해자 수를 종속변수(Y)로 설정하여
+두 변수 사이의 선형 관계를 분석합니다.
+""")
+
+x = df_filtered["로봇_내수"].values
+y = df_filtered["산업재해자수"].values
+
+slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+
+r_squared = r_value ** 2
+
+y_pred = slope * x + intercept
+
+# 회귀직선 생성
+x_line = np.linspace(
+    min(x),
+    max(x),
+    100
+)
+
+y_line = slope * x_line + intercept
+
+fig3 = go.Figure()
+
+# 실제 데이터 산점도
+fig3.add_trace(
+    go.Scatter(
+        x=x,
+        y=y,
+        mode="markers+text",
+        text=df_filtered["연도"].astype(str) + "년",
+        textposition="top center",
+        name="실제 데이터",
+        marker=dict(
+            size=11,
+            color="#2874A6"
+        ),
+        hovertemplate=
+        "연도: %{text}<br>" +
+        "로봇 내수: %{x:,.2f}십억원<br>" +
+        "산업재해자 수: %{y:,.0f}명<extra></extra>"
+    )
+)
+
+# 회귀직선
+fig3.add_trace(
+    go.Scatter(
+        x=x_line,
+        y=y_line,
+        mode="lines",
+        name="회귀 직선",
+        line=dict(
+            color="#E74C3C",
+            width=3
+        )
+    )
+)
+
+fig3.update_layout(
+    title="로봇 내수와 산업재해자 수의 선형 회귀분석",
+    xaxis_title="일반기계산업 내수 (십억원)",
+    yaxis_title="산업재해자 수 (명)",
+    template="plotly_white",
+    hovermode="closest"
+)
+
+st.plotly_chart(
+    fig3,
+    use_container_width=True
+)
+
+
+# ==========================================
+# 11. 회귀분석 결과
+# ==========================================
+
+st.subheader("📈 회귀분석 통계 결과")
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric(
+    "상관계수 (R)",
+    f"{r_value:.4f}"
+)
+
+col2.metric(
+    "결정계수 (R²)",
+    f"{r_squared:.4f}"
+)
+
+col3.metric(
+    "회귀계수",
+    f"{slope:.4f}"
+)
+
+col4.metric(
+    "유의확률 (p-value)",
+    f"{p_value:.4f}"
+)
+
+st.markdown(
+    f"**회귀식:** 산업재해자 수 = "
+    f"{slope:.4f} × 로봇 내수 + ({intercept:.2f})"
+)
 
 if slope < 0:
-
     st.info(
-        f"음(-)의 관계가 나타났습니다. "
-        f"회귀분석 결과 상관계수는 {r_val:.3f}입니다. "
-        "일반기계 내수가 증가할수록 산업재해자 수가 감소하는 "
-        "경향이 나타났습니다."
+        "음(-)의 관계가 나타났습니다. "
+        "로봇 내수가 증가할수록 산업재해자 수가 감소하는 "
+        "방향의 선형 관계입니다."
     )
 
 elif slope > 0:
-
-    st.warning(
-        f"양(+)의 관계가 나타났습니다. "
-        f"회귀분석 결과 상관계수는 {r_val:.3f}입니다. "
-        "일반기계 내수가 증가할수록 산업재해자 수도 증가하는 "
-        "경향이 나타났습니다."
+    st.info(
+        "양(+)의 관계가 나타났습니다. "
+        "로봇 내수가 증가할수록 산업재해자 수도 증가하는 "
+        "방향의 선형 관계입니다."
     )
 
 else:
+    st.info("선형 회귀계수가 0에 가깝습니다.")
 
-    st.info("두 변수 사이에 선형적인 관계가 거의 나타나지 않습니다.")
-
-
-if p_val < 0.05:
+if p_value < 0.05:
     st.success(
         "p-value가 0.05보다 작아 통계적으로 유의미한 "
         "선형 관계가 관찰되었습니다."
     )
 else:
     st.warning(
-        "p-value가 0.05 이상으로 통계적으로 유의미한 "
-        "선형 관계가 확인되지 않았습니다."
+        "p-value가 0.05 이상이므로 통계적으로 유의미한 "
+        "선형 관계라고 판단하기 어렵습니다."
     )
 
 
-# --------------------------------------------------
-# 9. 연구의 한계점
-# --------------------------------------------------
+# ==========================================
+# 12. 연구의 한계
+# ==========================================
 
 st.divider()
 
-st.subheader("⚠️ 연구의 한계점")
+st.header("⚠️ 연구의 한계점")
 
-st.write("""
-1. 본 분석에 사용된 내수 데이터는 일반기계산업 전체의 금액 기준 통계이므로
-   산업용 로봇만의 투자 규모를 직접 나타내지는 않습니다.
-
-2. 산업재해자 수는 산업 규모와 근로자 수의 변화에도 영향을 받습니다.
-
-3. 회귀분석에서 상관관계가 발견되더라도 로봇 도입이
-   산업재해를 직접 감소시키거나 증가시켰다고 단정할 수 없습니다.
-
-4. 실제 로봇 도입 효과를 더 정확하게 알아보려면
-   산업용 로봇 보급 대수와 산업별 근로자 수 등의 자료도 필요합니다.
+st.markdown("""
+- 로봇 내수 데이터는 일반기계산업 전체의 금액 기준 통계이므로 산업용 로봇만의 도입 규모를 정확하게 나타내지는 않습니다.
+- 산업재해자 수는 근로자 수, 산업 규모, 안전관리 수준 등 다양한 요인의 영향을 받습니다.
+- 두 변수 사이에 상관관계가 나타나더라도 로봇 도입이 산업재해를 직접 감소시켰다고 단정할 수 없습니다.
+- 로봇 도입의 효과를 정확히 확인하려면 산업용 로봇 보급 대수, 산업별 근로자 수 등 추가적인 데이터가 필요합니다.
 """)
 
-
-# --------------------------------------------------
-# 10. 통합 데이터 확인
-# --------------------------------------------------
-
-with st.expander("📋 전체 통합 데이터 확인"):
-
-    st.dataframe(
-        df_all,
-        use_container_width=True
-    )
+st.caption(
+    "본 앱은 공공데이터를 이용한 교육용 통계 분석 프로그램입니다."
+)
