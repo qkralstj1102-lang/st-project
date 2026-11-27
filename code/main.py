@@ -381,17 +381,36 @@ st.plotly_chart(
 # 10. 그래프 3 - 회귀분석
 # ==========================================
 
+
+# ==========================================
+# 10. 기준선 및 회귀분석 계산
+# ==========================================
+
 st.divider()
 
 st.header("3️⃣ 로봇 내수에 따른 산업재해자 수")
 
 st.markdown("""
-로봇 내수를 독립변수(X), 산업재해자 수를 종속변수(Y)로 설정하여
-두 변수 사이의 선형 관계를 분석합니다.
+로봇 내수를 독립변수(X), 산업재해자 수를 종속변수(Y)로 설정합니다.
+기준선 모델과 선형 회귀모델을 비교합니다.
 """)
 
 x = df_filtered["로봇_내수"].values
 y = df_filtered["산업재해자수"].values
+
+# ------------------------------------------
+# 기준선 모델
+# ------------------------------------------
+
+# 모든 연도의 산업재해자 수 평균 계산
+baseline_value = np.mean(y)
+
+# 모든 연도를 평균값으로 예측
+baseline_pred = np.full(len(y), baseline_value)
+
+# ------------------------------------------
+# 선형 회귀모델
+# ------------------------------------------
 
 slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
 
@@ -400,17 +419,29 @@ r_squared = r_value ** 2
 y_pred = slope * x + intercept
 
 # 회귀직선 생성
-x_line = np.linspace(
-    min(x),
-    max(x),
-    100
-)
-
+x_line = np.linspace(min(x), max(x), 100)
 y_line = slope * x_line + intercept
+
+# ------------------------------------------
+# 모델 평가 지표 계산
+# ------------------------------------------
+
+# 평균절대오차(MAE)
+baseline_mae = np.mean(np.abs(y - baseline_pred))
+regression_mae = np.mean(np.abs(y - y_pred))
+
+# 평균제곱근오차(RMSE)
+baseline_rmse = np.sqrt(np.mean((y - baseline_pred) ** 2))
+regression_rmse = np.sqrt(np.mean((y - y_pred) ** 2))
+
+
+# ==========================================
+# 11. 회귀분석 그래프
+# ==========================================
 
 fig3 = go.Figure()
 
-# 실제 데이터 산점도
+# 실제 데이터
 fig3.add_trace(
     go.Scatter(
         x=x,
@@ -419,43 +450,123 @@ fig3.add_trace(
         text=df_filtered["연도"].astype(str) + "년",
         textposition="top center",
         name="실제 데이터",
-        marker=dict(
-            size=11,
-            color="#2874A6"
-        ),
-        hovertemplate=
-        "연도: %{text}<br>" +
-        "로봇 내수: %{x:,.2f}십억원<br>" +
-        "산업재해자 수: %{y:,.0f}명<extra></extra>"
+        marker=dict(size=11, color="#2874A6")
     )
 )
 
-# 회귀직선
+# 기준선: 산업재해자 수 평균
+fig3.add_trace(
+    go.Scatter(
+        x=x_line,
+        y=np.full(len(x_line), baseline_value),
+        mode="lines",
+        name="기준선 모델 (평균 예측)",
+        line=dict(color="#2ECC71", width=3, dash="dash")
+    )
+)
+
+# 선형 회귀직선
 fig3.add_trace(
     go.Scatter(
         x=x_line,
         y=y_line,
         mode="lines",
-        name="회귀 직선",
-        line=dict(
-            color="#E74C3C",
-            width=3
-        )
+        name="선형 회귀모델",
+        line=dict(color="#E74C3C", width=3)
     )
 )
 
 fig3.update_layout(
-    title="로봇 내수와 산업재해자 수의 선형 회귀분석",
+    title="로봇 내수와 산업재해자 수의 관계",
     xaxis_title="일반기계산업 내수 (십억원)",
     yaxis_title="산업재해자 수 (명)",
     template="plotly_white",
     hovermode="closest"
 )
 
-st.plotly_chart(
-    fig3,
+st.plotly_chart(fig3, use_container_width=True)
+
+
+# ==========================================
+# 12. 기준선과 회귀모델 비교
+# ==========================================
+
+st.subheader("📊 기준선 모델과 회귀모델 비교")
+
+st.markdown("""
+기준선 모델은 산업재해자 수의 평균을 예측하고,
+회귀모델은 로봇 내수를 이용해 산업재해자 수를 예측합니다.
+""")
+
+comparison = pd.DataFrame({
+    "모델": ["기준선 모델", "선형 회귀모델"],
+    "MAE": [baseline_mae, regression_mae],
+    "RMSE": [baseline_rmse, regression_rmse]
+})
+
+st.dataframe(
+    comparison.style.format({
+        "MAE": "{:,.2f}",
+        "RMSE": "{:,.2f}"
+    }),
     use_container_width=True
 )
+
+col1, col2 = st.columns(2)
+
+col1.metric(
+    "기준선 MAE",
+    f"{baseline_mae:,.2f}명"
+)
+
+col2.metric(
+    "회귀모델 MAE",
+    f"{regression_mae:,.2f}명"
+)
+
+if regression_mae < baseline_mae:
+    st.success(
+        "선형 회귀모델이 기준선 모델보다 평균적으로 오차가 작습니다. "
+        "로봇 내수를 활용한 예측이 단순 평균 예측보다 나은 결과를 보였습니다."
+    )
+elif regression_mae > baseline_mae:
+    st.warning(
+        "선형 회귀모델의 오차가 기준선 모델보다 큽니다. "
+        "이번 데이터에서는 로봇 내수를 활용한 예측이 단순 평균 예측보다 "
+        "나은 결과를 보이지 못했습니다."
+    )
+else:
+    st.info("두 모델의 평균 예측 오차가 같습니다.")
+
+
+# ==========================================
+# 13. 회귀분석 통계 결과
+# ==========================================
+
+st.subheader("📈 회귀분석 통계 결과")
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric("상관계수 (R)", f"{r_value:.4f}")
+col2.metric("결정계수 (R²)", f"{r_squared:.4f}")
+col3.metric("회귀계수", f"{slope:.4f}")
+col4.metric("유의확률 (p-value)", f"{p_value:.4f}")
+
+st.markdown(
+    f"**회귀식:** 산업재해자 수 = "
+    f"{slope:.4f} × 로봇 내수 + ({intercept:.2f})"
+)
+
+if slope < 0:
+    st.info("로봇 내수가 증가할수록 산업재해자 수가 감소하는 방향의 관계입니다.")
+elif slope > 0:
+    st.info("로봇 내수가 증가할수록 산업재해자 수도 증가하는 방향의 관계입니다.")
+
+if p_value < 0.05:
+    st.success("통계적으로 유의미한 선형 관계가 관찰되었습니다.")
+else:
+    st.warning("통계적으로 유의미한 선형 관계라고 판단하기 어렵습니다.")
+
 
 
 # ==========================================
